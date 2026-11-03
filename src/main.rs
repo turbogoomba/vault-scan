@@ -5,6 +5,8 @@ use ratatui::widgets::{Block, BarChart, BorderType};
 use ratatui::layout::Direction;
 use ratatui::style::{Color, Style, Stylize};
 
+const INCLUDE: [&str; 3] = ["01", "02", "03"];
+
 const BG: Color = Color::Rgb(0x1B, 0x20, 0x21);
 const MUTED: Color = Color::Rgb(0x51, 0x51, 0x3D);
 const ACCENT: Color = Color::Rgb(0xA6, 0xA8, 0x67);
@@ -21,6 +23,8 @@ fn scan(dir: &Path) -> u32 {
             continue;
         }
 
+
+
         if path.is_dir() {
             count += scan(&path);
         } else if path.extension().is_some_and(|ext| ext == "md") {
@@ -36,7 +40,7 @@ fn folders(vault: &Path) -> Vec<(String, u64)> {
     for entry in fs::read_dir(vault).unwrap() {
         let path = entry.unwrap().path();
         let name = path.file_name().unwrap().to_string_lossy().to_string();
-        if path.is_dir() && !name.starts_with('.') {
+        if path.is_dir() && !name.starts_with(".") && INCLUDE.iter().any(|b| name.starts_with(b)) {
             result.push((name, scan(&path) as u64));
         }
     }
@@ -46,7 +50,8 @@ fn folders(vault: &Path) -> Vec<(String, u64)> {
 fn main() {
     let vault = Path::new("/home/tallman/Documents/Main (No Nextcloud)");
     let total = scan(vault);
-    let data = folders(vault);
+    let mut data = folders(vault);
+    data.sort();
     let bars: Vec<(&str, u64)> = data.iter().map(|(n, c)| (n.as_str(), *c)).collect();
 
     let mut terminal = ratatui::init();
