@@ -1,6 +1,6 @@
 use std::fs;
 use std::path::Path;
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 
 use ratatui::text::Span;
 use ratatui::crossterm::event::{self, Event, KeyCode};
@@ -76,6 +76,12 @@ fn mix(a: u8, b: u8, t: f32) -> u8 {
     (a as f32 + (b as f32 - a as f32) * t) as u8
 }
 
+fn hash(a: u32, b: u32, c: u32) -> u32 {
+    let mut h = a.wrapping_mul(374761393) ^ b.wrapping_mul(668265263) ^ c.wrapping_mul(2246822519);
+    h = (h ^ (h >> 13)).wrapping_mul(1274126177);
+    h ^ (h >> 16)
+}
+
 fn collect(dir: &Path, out: &mut Vec<Note>) {
     for entry in fs::read_dir(dir).unwrap() {
         let path = entry.unwrap().path();
@@ -104,19 +110,26 @@ fn collect(dir: &Path, out: &mut Vec<Note>) {
     }
 }
 
-fn main() {
-    let vault = Path::new("/home/tallman/Documents/Main (No Nextcloud)");
+struct Stats {
+    total: u32,
+    notes: u32,
+    dirs: Vec<(String, u64)>,
+    top: Vec<Line<'static>>,
+    per_day: [u32; 371],
+}
+
+fn load(vault: &Path) -> Stats {
     let (total, notes) = scan(vault);
-    let mut data = folders(vault);
-    data.sort();
-    let bars: Vec<(&str, u64)> = data.iter().map(|(n, c)| (n.as_str(), *c)).collect();
+
+    let mut dirs = folders(vault);
+    dirs.sort();
 
     let mut all = Vec::new();
     collect(vault, &mut all);
-
     all.sort_by(|a, b| b.words.cmp(&a.words));
-    let top_notes: Vec<Line> = all.iter().take(10).map(|n| {
-        Line::from(format!("{:>6}   {}", n.words, n.name)).fg(TEXT)
+
+    let top = all.iter().take(10).map(|n| {
+        Line::from(format!("{:>6}    {}", n.words, n.name)).fg(TEXT)
     }).collect();
 
     let mut per_day = [0u32; 371];
@@ -126,8 +139,20 @@ fn main() {
         }
     }
 
+    Stats { total, notes, dirs, top, per_day }
+}
+
+fn main() {
+    let vault = Path::new("/home/tallman/Documents/Main (No Nextcloud)");
+    let mut stats = load(vault);
+    let mut last_scan = Instant::now();
+
     let mut terminal = ratatui::init();
+    let start = Instant::now();
     loop {
+        let p = (start.elapsed().as_secs_f32() / 2.0).min(1.0);
+        let e = 1.0 - (1.0 - p).powi(3);
+        let ms = start.elapsed().as_millis() as u32;
         terminal.draw(|frame| {
             let [top, bottom] = Layout::vertical([
                 Constraint::Length(10),
@@ -138,15 +163,33 @@ fn main() {
                 .flex(Flex::Center)
                 .areas(top);
 
-            // Gradient from MUTED at the top to TEXT at the bottom
+            // Gradient logo with twinkling stars
             let rows: Vec<Line> = LOGO.lines().enumerate().map(|(i, line)| {
                 let t = i as f32 / 9.0;
-                let color = Color::Rgb(
-                    mix(0x51, 0xE3, t),
-                    mix(0x51, 0xDC, t),
-                    mix(0x3D, 0x95, t),
-                );
-                Line::from(line).fg(color)
+                let (r, g, b) = (mix(0x51, 0xE3, t), mix(0x51, 0xDC, t), mix(0x3D, 0x95, t));
+
+                let cells: Vec<Span> = line.chars().enumerate().map(|(j, ch)| {
+                    let (i, j) = (i as u32, j as u32);
+
+                    // Each character gets its own rhythm
+                    let offset = hash(i, j, 0) % 1000;
+                    let cycle = (ms + offset) / 1000;
+                    let phase = ((ms + offset) % 1000) as f32 / 1000.0;
+
+                    // About 1 in 60 characters lights up each cycle
+                    let star = p >= 1.0 && ch != ' ' && hash(i, j, cycle) % 60 == 0;
+                    let glow = if star { (phase * std::f32::consts::PI).sin() } else { 0.0 };
+
+                    let color = Color::Rgb(
+                        mix(mix(0x1B, r, e), 0xFF, glow),
+                        mix(mix(0x20, g, e), 0xFA, glow),
+                        mix(mix(0x21, b, e), 0xE0, glow),
+                    );
+                    let shown = if glow > 0.7 { '✦' } else { ch };
+                    Span::raw(shown.to_string()).fg(color)
+                }).collect();
+
+                Line::from(cells)
             }).collect();
 
             frame.render_widget(Block::new().bg(BG), top);
@@ -163,16 +206,21 @@ fn main() {
             ]).areas(middle);
 
             // Bar chart
+            let bars: Vec<(&str, u64)> = stats.dirs.iter()
+                .map(|(n, c)| (n.as_str(), (*c as f32 * e) as u64))
+                .collect();
+            let max = stats.dirs.iter().map(|(_, c)| *c).max().unwrap_or(1); // NY
+
             let block = Block::bordered()
                 .border_type(BorderType::Rounded)
-                .title(format!(" vault-scan   {} words   {} notater ", total, notes))
+                .title(format!(" vault-scan   {} words   {} notater ", (stats.total as f32 * e) as u32, (stats.notes as f32 * e) as u32))
                 .fg(MUTED)
                 .bg(BG);
             let chart = BarChart::default()
                 .block(block)
                 .data(&bars)
+                .max(max) // NY
                 .direction(Direction::Horizontal)
-                .bar_width(1)
                 .bar_gap(1)
                 .bar_style(Style::new().fg(ACCENT))
                 .value_style(Style::new().fg(BG).bg(ACCENT))
@@ -185,7 +233,7 @@ fn main() {
                 .title(" største notater ")
                 .fg(MUTED)
                 .bg(BG);
-            frame.render_widget(Paragraph::new(top_notes.clone()).block(list_box), list_area);
+            frame.render_widget(Paragraph::new(stats.top.iter().take((e * 10.0) as usize).cloned().collect::<Vec<_>>()).block(list_box), list_area);
 
             // Heatmap
             let heat_box = Block::bordered()
@@ -198,8 +246,8 @@ fn main() {
             let heat: Vec<Line> = (0..7).map(|row| {
                 let cells: Vec<Span> = (0..53).map(|col| {
                     let day = (52 - col) * 7 + (6 - row);
-                    let count = per_day[day];
-                    let color = if count == 0 {
+                    let count = stats.per_day[day];
+                    let color = if count == 0 || col as f32 > e * 53.0 {
                         Color::Rgb(0x2A, 0x30, 0x30)
                     } else {
                         let t = count.min(5) as f32 / 5.0;
@@ -213,10 +261,19 @@ fn main() {
             frame.render_widget(Paragraph::new(heat).block(heat_box).centered(), heat_area);
         }).unwrap();
 
-        if let Event::Key(key) = event::read().unwrap() {
-            if key.code == KeyCode::Char('q') {
-                break;
+        // Wait up to half a second for a key press
+        if event::poll(Duration::from_millis(if p < 1.0 { 16 } else { 500 })).unwrap() {
+            if let Event::Key(key) = event::read().unwrap() {
+                if key.code == KeyCode::Char('q') {
+                    break;
+                }
             }
+        }
+
+        // Rescan the vault every 2 seconds
+        if last_scan.elapsed() >= Duration::from_secs(2) {
+            stats = load(vault);
+            last_scan = Instant::now();
         }
     }
     ratatui::restore();
