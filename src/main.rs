@@ -22,6 +22,15 @@ const LOGO: &str = r#"
 "#;
 
 const INCLUDE: [&str; 3] = ["01", "02", "03"];
+const WEEKS: usize = 36;
+
+const LEVELS: [Color; 5] = [
+    Color::Rgb(0x26, 0x2C, 0x2C),
+    MUTED,
+    Color::Rgb(0x7C, 0x7D, 0x52),
+    ACCENT,
+    TEXT,
+];
 
 const BG: Color = Color::Rgb(0x1B, 0x20, 0x21);
 const MUTED: Color = Color::Rgb(0x51, 0x51, 0x3D);
@@ -145,6 +154,8 @@ fn load(vault: &Path) -> Stats {
 fn main() {
     let vault = Path::new("/home/tallman/Documents/Main (No Nextcloud)");
     let mut stats = load(vault);
+    let days = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs() / 86400;
+    let today = ((days + 3) % 7) as i64;
     let mut last_scan = Instant::now();
 
     let mut terminal = ratatui::init();
@@ -235,30 +246,54 @@ fn main() {
                 .bg(BG);
             frame.render_widget(Paragraph::new(stats.top.iter().take((e * 10.0) as usize).cloned().collect::<Vec<_>>()).block(list_box), list_area);
 
-            // Heatmap
+            // Heatmap, GitHub style
+            let mut legend = vec![Span::raw(" Less ").fg(MUTED)];
+            for c in LEVELS {
+                legend.push(Span::raw("■ ").fg(c));
+            }
+            legend.push(Span::raw("More ").fg(MUTED));
+
             let heat_box = Block::bordered()
                 .border_type(BorderType::Rounded)
                 .title(" aktivitet ")
+                .title_bottom(Line::from(legend).right_aligned())
                 .fg(MUTED)
                 .bg(BG);
 
-            // One square per day, newest in the bottom right corner
+            let labels = ["Man ", "    ", "Ons ", "    ", "Fre ", "    ", "    "];
+
+            // One row per weekday, one column per week, newest week on the right
             let heat: Vec<Line> = (0..7).map(|row| {
-                let cells: Vec<Span> = (0..53).map(|col| {
-                    let day = (52 - col) * 7 + (6 - row);
-                    let count = stats.per_day[day];
-                    let color = if count == 0 || col as f32 > e * 53.0 {
-                        Color::Rgb(0x2A, 0x30, 0x30)
-                    } else {
-                        let t = count.min(5) as f32 / 5.0;
-                        Color::Rgb(mix(0x51, 0xE3, t), mix(0x51, 0xDC, t), mix(0x3D, 0x95, t))
+                let mut cells = vec![Span::raw(labels[row]).fg(MUTED)];
+                for col in 0..WEEKS {
+                    let ago = (WEEKS - 1 - col) as i64 * 7 + today - row as i64;
+                    if ago < 0 {
+                        cells.push(Span::raw("  "));
+                        continue;
+                    }
+                    let count = stats.per_day[ago as usize];
+                    let level = match count {
+                        0 => 0,
+                        1 => 1,
+                        2 => 2,
+                        3..=4 => 3,
+                        _ => 4,
                     };
-                    Span::raw("██").fg(color)
-                }).collect();
+                    let level = if col as f32 > e * WEEKS as f32 { 0 } else { level };
+                    cells.push(Span::raw("▆▆ ").fg(LEVELS[level]));
+                }
                 Line::from(cells)
             }).collect();
 
-            frame.render_widget(Paragraph::new(heat).block(heat_box).centered(), heat_area);
+            // Center the whole grid as one block, so the rows stay aligned
+            let inner = heat_box.inner(heat_area);
+            frame.render_widget(heat_box, heat_area);
+
+            let grid_width = 4 + WEEKS as u16 * 3;
+            let [grid_area] = Layout::horizontal([Constraint::Length(grid_width)])
+                .flex(Flex::Center)
+                .areas(inner);
+            frame.render_widget(Paragraph::new(heat), grid_area);
         }).unwrap();
 
         // Wait up to half a second for a key press
