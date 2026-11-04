@@ -11,6 +11,7 @@ mod theme;
 mod tree;
 mod ui;
 mod exams;
+mod preview;
 
 use scan::load;
 
@@ -29,6 +30,9 @@ fn main() {
     let mut browsing = false;
     let mut expanded: HashSet<PathBuf> = HashSet::new();
     let mut items: Vec<tree::Item> = Vec::new();
+    let mut picking = false;
+    let mut naming: Option<PathBuf> = None;
+    let mut picking = false;
 
     let mut terminal = ratatui::init();
     let start = Instant::now();
@@ -51,8 +55,39 @@ fn main() {
             Vec::new()
         };
 
+        // What the list box asks for while making a new note
+        let prompt = if picking {
+            let mut text = String::from(" nytt notat i: ");
+            for (i, (name, _)) in stats.dirs.iter().enumerate() {
+                // "01 - ELI2300 Dynamisk" -> "ELI2300"
+                let short = name.split(" - ").nth(1).unwrap_or(name).split(' ').next().unwrap_or(name);
+                text.push_str(&format!(" {} {} ", i + 1, short));
+            }
+            text.push_str(" 0 rot ");
+            Some(text)
+        } else if naming.is_some() {
+            Some(format!(" navn: {}_ ", query))
+        } else {
+            None
+        };
+        // What the list box asks for while making a new note
+        let prompt = if picking {
+            let mut text = String::from(" nytt notat i: ");
+            for (i, (name, _)) in stats.dirs.iter().enumerate() {
+                // "01 - ELI2300 Dynamisk" -> "ELI2300"
+                let short = name.split(" - ").nth(1).unwrap_or(name).split(' ').next().unwrap_or(name);
+                text.push_str(&format!(" {} {} ", i + 1, short));
+            }
+            text.push_str(" 0 rot ");
+            Some(text)
+        } else if naming.is_some() {
+            Some(format!(" navn: {}_ ", query))
+        } else {
+            None
+        };
+
         terminal.draw(|frame| {
-            ui::draw(frame, &stats, p, e, ms, selected, searching, &query, &results, &items)
+            ui::draw(frame, &stats, p, e, ms, selected, searching, &query, &results, &items, prompt.as_deref())
         }).unwrap();
 
         // Wait for the first key, then handle every key that has piled up
@@ -67,7 +102,40 @@ fn main() {
             // Whether the file tree needs to be read again
             let mut rebuild = false;
 
-            if browsing {
+            if picking {
+                match key.code {
+                    KeyCode::Char(c) if c.is_ascii_digit() => {
+                        let n = c.to_digit(10).unwrap() as usize;
+                        if n == 0 {
+                            naming = Some(vault.to_path_buf());
+                        } else if let Some((name, _)) = stats.dirs.get(n - 1) {
+                            naming = Some(vault.join(name));
+                        }
+                        if naming.is_some() {
+                            picking = false;
+                            query.clear();
+                        }
+                    }
+                    KeyCode::Esc => picking = false,
+                    _ => {}
+                }
+            } else if let Some(folder) = naming.clone() {
+                match key.code {
+                    KeyCode::Esc => {
+                        naming = None;
+                        query.clear();
+                    }
+                    KeyCode::Char(c) => query.push(c),
+                    KeyCode::Backspace => {
+                        query.pop();
+                    }
+                    KeyCode::Enter if !query.is_empty() => {
+                        open = Some(folder.join(format!("{}.md", query)));
+                        naming = None;
+                    }
+                    _ => {}
+                }
+            } else if browsing {
                 match key.code {
                     KeyCode::Esc | KeyCode::Char('q') => {
                         browsing = false;
@@ -149,6 +217,7 @@ fn main() {
                         selected = 0;
                     }
 
+                    KeyCode::Char('n') => picking = true,
                     KeyCode::Char('e') => {
                         browsing = true;
                         selected = 0;

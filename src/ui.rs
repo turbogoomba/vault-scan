@@ -1,13 +1,14 @@
-use std::path::PathBuf;
+use std::path::{PathBuf, Path};
 use std::time::SystemTime;
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Flex, Layout};
 use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{BarChart, Block, BorderType, Paragraph};
+use ratatui::widgets::{BarChart, Block, BorderType, Clear, Wrap, Paragraph};
 
 use crate::tree::Item;
+use crate::preview;
 use crate::exams;
 use crate::scan::Stats;
 use crate::theme::*;
@@ -15,7 +16,7 @@ use crate::theme::*;
 // Draws the dashborad
 pub fn draw(frame: &mut Frame, stats: &Stats, p: f32, e: f32, ms: u32,
     selected: usize, searching: bool, query: &str, results: &[(String, PathBuf)],
-    tree: &[Item]) {
+    tree: &[Item], prompt: Option<&str>) {
     let days = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs() / 86400;
     let today = ((days + 3) % 7) as i64;
 
@@ -143,9 +144,35 @@ pub fn draw(frame: &mut Frame, stats: &Stats, p: f32, e: f32, ms: u32,
         .fg(MUTED)
         .bg(BG);
     frame.render_widget(Paragraph::new(exam_lines).block(exam_box), exam_area);
+    // The note under the cursor, if we are browsing or searching
+    let preview_path: Option<&Path> = if !tree.is_empty() {
+        tree.get(selected).filter(|item| !item.is_dir).map(|item| item.path.as_path())
+    } else if searching {
+        results.get(selected).map(|(_, path)| path.as_path())
+    } else {
+        None
+    };
+
+    // Draw the preview on top of the chart and exams
+    if let Some(path) = preview_path {
+        let name = path.file_stem().unwrap().to_string_lossy().to_string();
+        let preview_box = Block::bordered()
+            .border_type(BorderType::Rounded)
+            .title(format!(" {} ", name))
+            .fg(MUTED)
+            .bg(BG);
+
+        frame.render_widget(Clear, left);
+        frame.render_widget(
+            Paragraph::new(preview::render(path)).block(preview_box).wrap(Wrap { trim: false }),
+            left,
+        );
+    }
 
     // Note list: search results, file tree or biggest notes
-    let (title, lines): (String, Vec<Line>) = if !tree.is_empty() {
+    let (title, lines): (String, Vec<Line>) = if let Some(text) = prompt {
+        (text.to_string(), Vec::new())
+    } else if !tree.is_empty() {
         let lines = tree.iter().map(|item| {
             let indent = "  ".repeat(item.depth);
             if item.is_dir {
@@ -234,12 +261,14 @@ pub fn draw(frame: &mut Frame, stats: &Stats, p: f32, e: f32, ms: u32,
     frame.render_widget(Paragraph::new(heat), grid_area);
 
     // Key hints for the mode we are in
-    let keys: &[(&str, &str)] = if !tree.is_empty() {
+    let keys: &[(&str, &str)] = if prompt.is_some() {
+        &[("0-3", "velg mappe"), ("enter", "lag notat"), ("esc", "avbryt")]
+    } else if !tree.is_empty() {
         &[("j/k", "flytt"), ("l", "åpne"), ("h", "lukk"), ("/", "søk"), ("esc", "tilbake"), ("q", "avslutt")]
     } else if searching {
         &[("↑/↓", "flytt"), ("enter", "åpne eller lag nytt"), ("esc", "tilbake")]
     } else {
-        &[("j/k", "flytt"), ("enter", "åpne"), ("/", "søk"), ("e", "filer"), ("q", "avslutt")]
+        &[("j/k", "flytt"), ("enter", "åpne"), ("/", "søk"), ("e", "filer"), ("n", "nytt"), ("q", "avslutt")]
     };
 
     let mut spans = Vec::new();
