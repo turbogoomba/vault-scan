@@ -19,9 +19,10 @@ pub fn draw(frame: &mut Frame, stats: &Stats, p: f32, e: f32, ms: u32,
     let days = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs() / 86400;
     let today = ((days + 3) % 7) as i64;
 
-    let [top, bottom] = Layout::vertical([
+    let [top, bottom, help_area] = Layout::vertical([
         Constraint::Length(10),
         Constraint::Min(0),
+        Constraint::Length(1),
     ]).areas(frame.area());
 
     let [logo_area] = Layout::horizontal([Constraint::Length(110)])
@@ -231,4 +232,20 @@ pub fn draw(frame: &mut Frame, stats: &Stats, p: f32, e: f32, ms: u32,
         .flex(Flex::Center)
         .areas(inner);
     frame.render_widget(Paragraph::new(heat), grid_area);
+
+    // Key hints for the mode we are in
+    let keys: &[(&str, &str)] = if !tree.is_empty() {
+        &[("j/k", "flytt"), ("l", "åpne"), ("h", "lukk"), ("/", "søk"), ("esc", "tilbake"), ("q", "avslutt")]
+    } else if searching {
+        &[("↑/↓", "flytt"), ("enter", "åpne eller lag nytt"), ("esc", "tilbake")]
+    } else {
+        &[("j/k", "flytt"), ("enter", "åpne"), ("/", "søk"), ("e", "filer"), ("q", "avslutt")]
+    };
+
+    let mut spans = Vec::new();
+    for (key, what) in keys {
+        spans.push(Span::raw(format!(" {} ", key)).fg(BG).bg(ACCENT));
+        spans.push(Span::raw(format!(" {}   ", what)).fg(MUTED));
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)).bg(BG).centered(), help_area);
 }
