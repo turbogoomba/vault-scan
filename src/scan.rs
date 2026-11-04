@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -15,6 +16,9 @@ struct Note {
     name: String,
     words: u32,
     days_ago: u64,
+    links: Vec<String>,
+    tags: Vec<String>,
+    age: u64,
 }
 
 // Defines what the stats are
@@ -26,6 +30,8 @@ pub struct Stats {
     pub top: Vec<Line<'static>>,
     pub per_day: [u32; 371],
     pub all: Vec<(String, PathBuf)>,
+    pub graph: HashMap<String, Vec<String>>,
+    pub tags: HashMap<String, Vec<String>>,
 }
 
 // The scan function
@@ -81,22 +87,91 @@ fn collect(dir: &Path, out: &mut Vec<Note>) {
         } else if path.extension().is_some_and(|ext| ext == "md") {
             let text = fs::read_to_string(&path).unwrap();
             let modified= fs::metadata(&path).unwrap().modified().unwrap();
-            let days_ago = SystemTime::now()
+            let age = SystemTime::now()
                 .duration_since(modified)
                 .unwrap_or_default()
-                .as_secs() / 86400;
+                .as_secs();
+            let days_ago = age / 86400;
 
             out.push(Note {
                 path: path.clone(),
                 name: name.trim_end_matches(".md").to_string(),
                 words: text.split_whitespace().count() as u32,
                 days_ago,
+                links: links_in(&text),
+                tags: tags_in(&text),
+                age,
             });
         }
     }
 }
 
 // Scans the vault and gathers everything the dashboard shows
+// Every [[link]] in a note, without |alias, #heading or folders
+fn links_in(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some(start) = rest.find("[[") {
+        let after = &rest[start + 2..];
+        let Some(end) = after.find("]]") else { break };
+        let target = after[..end].split(['|', '#']).next().unwrap_or("");
+        let target = target.rsplit('/').next().unwrap_or("").trim();
+        if !target.is_empty() {
+            out.push(target.to_string());
+        }
+        rest = &after[end + 2..];
+    }
+    out
+}
+
+// Every tag in a note, from the frontmatter (tags: [a, b] or a list) and #tags in the text
+fn tags_in(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut lines = text.lines().peekable();
+
+    if lines.peek().map(|l| l.trim()) == Some("---") {
+        lines.next();
+        let mut in_list = false;
+        for line in lines.by_ref() {
+            let l = line.trim();
+            if l == "---" {
+                break;
+            }
+            if let Some(rest) = l.strip_prefix("tags:") {
+                let rest = rest.trim().trim_start_matches('[').trim_end_matches(']');
+                for tag in rest.split(',') {
+                    let tag = tag.trim().trim_start_matches('#');
+                    if !tag.is_empty() {
+                        out.push(tag.to_string());
+                    }
+                }
+                in_list = rest.is_empty();
+            } else if in_list && l.starts_with("- ") {
+                out.push(l[2..].trim().trim_start_matches('#').to_string());
+            } else {
+                in_list = false;
+            }
+        }
+    }
+
+    // #tag in the text, but not headings (# Title)
+    for line in lines {
+        for word in line.split_whitespace() {
+            if let Some(tag) = word.strip_prefix('#') {
+                let tag: String = tag.chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '-' || *c == '_' || *c == '/')
+                    .collect();
+                if !tag.is_empty() && !tag.chars().all(|c| c.is_ascii_digit()) {
+                    out.push(tag);
+                }
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
 pub fn load(vault: &Path) -> Stats {
     let (total, notes) = scan(vault);
 
@@ -112,11 +187,17 @@ pub fn load(vault: &Path) -> Stats {
         .collect();
     all_notes.sort();
 
-    // Biggest notes first
-    all.sort_by(|a, b| b.words.cmp(&a.words));
+    // Most recently changed notes first
+    all.sort_by_key(|n| n.age);
 
     let top = all.iter().take(10).map(|n| {
-        Line::from(format!("{:>6}    {}", n.words, n.name)).fg(TEXT)
+        let when = match n.age {
+            a if a < 3600 => format!("{} min", a / 60),
+            a if a < 86400 => format!("{} t", a / 3600),
+            a if a < 2 * 86400 => "i går".to_string(),
+            a => format!("{} d", a / 86400),
+        };
+        Line::from(format!("{:>6}    {}", when, n.name)).fg(TEXT)
     }).collect();
 
     let paths = all.iter().take(10).map(|n| n.path.clone()).collect();
@@ -128,5 +209,26 @@ pub fn load(vault: &Path) -> Stats {
         }
     }
 
-    Stats { total, notes, dirs, top, paths, per_day, all: all_notes }
+    // Who links to whom, both ways, so every note knows its neighbours
+    let mut graph: HashMap<String, Vec<String>> = HashMap::new();
+    for n in &all {
+        for target in &n.links {
+            if *target == n.name {
+                continue;
+            }
+            graph.entry(n.name.clone()).or_default().push(target.clone());
+            graph.entry(target.clone()).or_default().push(n.name.clone());
+        }
+    }
+    for list in graph.values_mut() {
+        list.sort();
+        list.dedup();
+    }
+
+    // Tags for every note
+    let tags: HashMap<String, Vec<String>> = all.iter()
+        .map(|n| (n.name.clone(), n.tags.clone()))
+        .collect();
+
+    Stats { total, notes, dirs, top, paths, per_day, all: all_notes, graph, tags }
 }

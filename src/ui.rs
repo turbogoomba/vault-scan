@@ -2,6 +2,8 @@ use std::path::{PathBuf, Path};
 use std::time::SystemTime;
 
 use ratatui::Frame;
+use ratatui::symbols::Marker;
+use ratatui::widgets::canvas::{Canvas, Line as CanvasLine};
 use ratatui::layout::{Constraint, Direction, Flex, Layout};
 use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::{Line, Span};
@@ -72,6 +74,12 @@ pub fn draw(frame: &mut Frame, stats: &Stats, p: f32, e: f32, ms: u32,
         Constraint::Percentage(60),
         Constraint::Percentage(40),
     ]).areas(middle);
+
+    // Note list on top, graph below
+    let [list_area, graph_area] = Layout::vertical([
+        if tree.is_empty() { Constraint::Percentage(50) } else { Constraint::Min(0) },
+        if tree.is_empty() { Constraint::Percentage(50) } else { Constraint::Length(0) },
+    ]).areas(list_area);
 
     // Bar chart on top, exams below, half each
     let [chart_area, exam_area] = Layout::vertical([
@@ -192,7 +200,7 @@ pub fn draw(frame: &mut Frame, stats: &Stats, p: f32, e: f32, ms: u32,
         }
         (format!(" søk: {}_ ", query), lines)
     } else {
-        (" største notater ".to_string(), stats.top.iter().take((e * 10.0) as usize).cloned().collect())
+        (" nylige notater ".to_string(), stats.top.iter().take((e * 10.0) as usize).cloned().collect())
     };
 
     // Highlight the selected line
@@ -260,6 +268,141 @@ pub fn draw(frame: &mut Frame, stats: &Stats, p: f32, e: f32, ms: u32,
         .areas(inner);
     frame.render_widget(Paragraph::new(heat), grid_area);
 
+    // Graph: the note under the cursor in the middle, its links around it, its tags inside,
+    // and notes two steps away as faint dots. Hidden while the file tree is open.
+    if tree.is_empty() {
+        let focus_path: Option<&std::path::Path> = if searching {
+            results.get(selected).map(|(_, path)| path.as_path())
+        } else if prompt.is_none() {
+            stats.paths.get(selected).map(|path| path.as_path())
+        } else {
+            None
+        };
+        let graph_box = Block::bordered()
+            .border_type(BorderType::Rounded)
+            .title(" graf ")
+            .fg(MUTED)
+            .bg(BG);
+
+        if let Some(path) = focus_path {
+            let name = path.file_stem().unwrap().to_string_lossy().to_string();
+            let links: Vec<String> = stats.graph.get(&name).cloned().unwrap_or_default()
+                .into_iter().take(10).collect();
+            // Tags go along the bottom edge of the box, so they never cover the graph
+            let tag_list: Vec<String> = stats.tags.get(&name).cloned().unwrap_or_default();
+            let graph_box = if tag_list.is_empty() {
+                graph_box
+            } else {
+                let text = tag_list.iter().map(|t| format!("#{}", t)).collect::<Vec<_>>().join("  ");
+                graph_box.title_bottom(Line::from(format!(" {} ", text)).fg(Color::Rgb(0x7C, 0x7D, 0x52)).right_aligned())
+            };
+            let tags: Vec<String> = Vec::new();
+
+            // Notes two steps away, and which link leads to each of them
+            let mut far: Vec<(String, usize)> = Vec::new();
+            for (i, link) in links.iter().enumerate() {
+                for next in stats.graph.get(link).cloned().unwrap_or_default() {
+                    if next != name && !links.contains(&next) && !far.iter().any(|(n, _)| *n == next) {
+                        far.push((next, i));
+                    }
+                }
+            }
+            far.clear();
+
+            // Fly out again every time the note under the cursor changes
+            let since = GRAPH_FOCUS.with(|focus| {
+                let mut focus = focus.borrow_mut();
+                if focus.0 != name {
+                    *focus = (name.clone(), ms);
+                }
+                ms.saturating_sub(focus.1)
+            });
+            let fly = (since as f64 / 700.0).min(1.0);
+            // Pops out a bit too far and settles back, like a mind map opening
+            let back = 1.70158;
+            let grow = e as f64 * (1.0 + (back + 1.0) * (fly - 1.0).powi(3) + back * (fly - 1.0).powi(2));
+
+            let tau = std::f64::consts::TAU;
+            let spin = 0.3; // fixed angles, no spinning
+            let t = ms as f64 / 1000.0;
+            let pulse = ((ms as f64 / 1000.0 * tau).sin() + 1.0) / 2.0;
+            let centre = Color::Rgb(mix(0xA6, 0xE3, pulse as f32), mix(0xA8, 0xDC, pulse as f32), mix(0x67, 0x95, pulse as f32));
+            let tag_color = Color::Rgb(0x7C, 0x7D, 0x52);
+            let faint = Color::Rgb(0x3A, 0x40, 0x3C);
+
+            // How wide one character is, in graph units, so names can stay inside the box
+            let cell = 2.0 / graph_area.width.saturating_sub(2).max(1) as f64;
+
+            // Places n things evenly on a circle
+            let ring = move |count: usize, radius: f64, turn: f64| -> Vec<(f64, f64)> {
+                (0..count).map(|i| {
+                    let angle = turn + i as f64 / count.max(1) as f64 * tau;
+                    // Every note hovers gently in its own rhythm
+                    let bob = (t * 1.2 + i as f64 * 1.9).sin() * 0.03 * fly;
+                    (angle.cos() * radius * grow, (angle.sin() * radius * 1.35).clamp(-0.95, 0.95) * grow + bob)
+                }).collect()
+            };
+
+            let canvas = Canvas::default()
+                .block(graph_box)
+                .marker(Marker::Braille)
+                .background_color(BG)
+                .x_bounds([-1.0, 1.0])
+                .y_bounds([-1.0, 1.0])
+                .paint(move |ctx| {
+                    let link_points = ring(links.len(), 0.62, spin);
+                    let tag_points = ring(tags.len(), 0.32, -spin * 1.5 + 0.5);
+                    let far_points = ring(far.len(), 0.95, spin * 0.6 + 0.2);
+
+                    // Faint lines out to the notes two steps away, then the real links and tags
+                    for (k, &(x, y)) in far_points.iter().enumerate() {
+                        let (lx, ly) = link_points[far[k].1];
+                        ctx.draw(&CanvasLine::new(lx, ly, x, y, faint));
+                    }
+                    for &(x, y) in &link_points {
+                        ctx.draw(&CanvasLine::new(0.0, 0.0, x, y, MUTED));
+                    }
+                    for &(x, y) in &tag_points {
+                        ctx.draw(&CanvasLine::new(0.0, 0.0, x, y, tag_color));
+                    }
+                    ctx.layer();
+                    for &(x, y) in &far_points {
+                        ctx.print(x, y, Span::raw("·").fg(MUTED));
+                    }
+
+                    // A name next to its dot, on the side that keeps it inside the box
+                    let mut label = |x: f64, y: f64, dot: &str, text: String, color: Color| {
+                        if x > 0.15 {
+                            let width = (text.chars().count() + 1) as f64 * cell;
+                            ctx.print(x - width, y, Span::raw(format!("{} {}", text, dot)).fg(color));
+                        } else {
+                            ctx.print(x, y, Span::raw(format!("{} {}", dot, text)).fg(color));
+                        }
+                    };
+
+                    for (i, &(x, y)) in link_points.iter().enumerate() {
+                        label(x, y, "●", short(&links[i]), ACCENT);
+                    }
+                    for (i, &(x, y)) in tag_points.iter().enumerate() {
+                        // Keep tags off the line where the centre name is
+                        let y = if y.abs() < 0.15 { y.signum() * 0.18 } else { y };
+                        label(x, y, "#", short(&tags[i]), tag_color);
+                    }
+                    let centre_name = short(&name);
+                    let half = (centre_name.chars().count() + 2) as f64 * cell / 2.0;
+                    ctx.print(-half, 0.0, Span::raw(format!("◉ {}", centre_name)).fg(centre).bold());
+
+                    if links.is_empty() && tags.is_empty() {
+                        ctx.print(-0.35, -0.45, Span::raw("ingen lenker").fg(MUTED));
+                    }
+                });
+            frame.render_widget(canvas, graph_area);
+        } else {
+            frame.render_widget(graph_box, graph_area);
+        }
+    }
+
+
     // Key hints for the mode we are in
     let keys: &[(&str, &str)] = if prompt.is_some() {
         &[("0-3", "velg mappe"), ("enter", "lag notat"), ("esc", "avbryt")]
@@ -277,4 +420,15 @@ pub fn draw(frame: &mut Frame, stats: &Stats, p: f32, e: f32, ms: u32,
         spans.push(Span::raw(format!(" {}   ", what)).fg(MUTED));
     }
     frame.render_widget(Paragraph::new(Line::from(spans)).bg(BG).centered(), help_area);
+}
+
+// Shortens long note names so the graph stays readable
+fn short(name: &str) -> String {
+    let cut: String = name.chars().take(16).collect();
+    if name.chars().count() > 16 { format!("{}…", cut) } else { cut }
+}
+
+thread_local! {
+    // The note the graph showed last time, and when it changed (for the fly-out animation)
+    static GRAPH_FOCUS: std::cell::RefCell<(String, u32)> = std::cell::RefCell::new((String::new(), 0));
 }
