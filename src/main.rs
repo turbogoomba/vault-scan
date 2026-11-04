@@ -10,6 +10,7 @@ mod scan;
 mod theme;
 mod tree;
 mod ui;
+mod exams;
 
 use scan::load;
 

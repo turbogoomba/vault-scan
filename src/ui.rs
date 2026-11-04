@@ -8,6 +8,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{BarChart, Block, BorderType, Paragraph};
 
 use crate::tree::Item;
+use crate::exams;
 use crate::scan::Stats;
 use crate::theme::*;
 
@@ -58,19 +59,23 @@ pub fn draw(frame: &mut Frame, stats: &Stats, p: f32, e: f32, ms: u32,
 
     frame.render_widget(Block::new().bg(BG), top);
     frame.render_widget(Paragraph::new(rows).bg(BG), logo_area);
-
-    frame.render_widget(Block::new().bg(BG), top);
-
+    // Heatmap at the bottom, the rest above it
     let [middle, heat_area] = Layout::vertical([
         Constraint::Min(0),
         Constraint::Length(9),
     ]).areas(bottom);
 
-    let [chart_area, list_area] = Layout::horizontal([
+    // Chart and exams on the left, note list on the right
+    let [left, list_area] = Layout::horizontal([
         Constraint::Percentage(60),
         Constraint::Percentage(40),
     ]).areas(middle);
 
+    // Bar chart on top, exams below, half each
+    let [chart_area, exam_area] = Layout::vertical([
+        Constraint::Percentage(50),
+        Constraint::Percentage(50),
+    ]).areas(left);
     // Bar chart
     let bars: Vec<(&str, u64)> = stats.dirs.iter()
         .map(|(n, c)| (n.as_str(), (*c as f32 * e) as u64))
@@ -92,6 +97,51 @@ pub fn draw(frame: &mut Frame, stats: &Stats, p: f32, e: f32, ms: u32,
         .value_style(Style::new().fg(BG).bg(ACCENT))
         .label_style(Style::new().fg(TEXT));
     frame.render_widget(chart, chart_area);
+    // Exams, soonest first, with a bar that fills up the last 30 days
+    // Exams, soonest first, with a bar that fills up the last 30 days
+    let exam_lines: Vec<Line> = exams::upcoming().into_iter().map(|(name, date, left)| {
+        let color = if left <= 7 { TEXT } else { ACCENT };
+        let when = match left {
+            0 => "i dag".to_string(),
+            1 => "i morgen".to_string(),
+            d => format!("om {} dager", d),
+        };
+
+        // How many of the 10 boxes are filled, growing in at startup
+        let filled = ((30 - left.min(30)) as usize / 3).min(10);
+        let shown = (filled as f32 * e) as usize;
+
+        // Goes smoothly from 0 to 1 and back, once a second
+        let pulse = ((ms as f32 / 1000.0 * std::f32::consts::TAU).sin() + 1.0) / 2.0;
+        let Color::Rgb(r, g, b) = color else { unreachable!() };
+        let glow = Color::Rgb(mix(0x51, r, pulse), mix(0x51, g, pulse), mix(0x3D, b, pulse));
+
+        let mut spans = vec![
+            Span::raw(format!(" {:<28}", name)).fg(TEXT),
+            Span::raw(format!("{}   ", date)).fg(MUTED),
+        ];
+
+        // Filled boxes, then the pulsing next box, then empty boxes
+        for i in 0..10 {
+            if i < shown {
+                spans.push(Span::raw("▰").fg(color));
+            } else if i == shown && p >= 1.0 {
+                spans.push(Span::raw("▰").fg(glow));
+            } else {
+                spans.push(Span::raw("▱").fg(MUTED));
+            }
+        }
+
+        spans.push(Span::raw(format!("   {}", when)).fg(color));
+        Line::from(spans)
+    }).collect();
+
+    let exam_box = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .title(" eksamener ")
+        .fg(MUTED)
+        .bg(BG);
+    frame.render_widget(Paragraph::new(exam_lines).block(exam_box), exam_area);
 
     // Note list: search results, file tree or biggest notes
     let (title, lines): (String, Vec<Line>) = if !tree.is_empty() {
