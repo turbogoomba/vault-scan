@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use ratatui::style::Stylize;
@@ -11,6 +11,7 @@ const INCLUDE: [&str; 3] = ["01", "02", "03"]; // What notes to include in stats
 
 // Defines what a note is
 struct Note {
+    path: PathBuf,
     name: String,
     words: u32,
     days_ago: u64,
@@ -18,11 +19,13 @@ struct Note {
 
 // Defines what the stats are
 pub struct Stats {
+    pub paths: Vec<PathBuf>,
     pub total: u32,
     pub notes: u32,
     pub dirs: Vec<(String, u64)>,
     pub top: Vec<Line<'static>>,
     pub per_day: [u32; 371],
+    pub all: Vec<(String, PathBuf)>,
 }
 
 // The scan function
@@ -84,6 +87,7 @@ fn collect(dir: &Path, out: &mut Vec<Note>) {
                 .as_secs() / 86400;
 
             out.push(Note {
+                path: path.clone(),
                 name: name.trim_end_matches(".md").to_string(),
                 words: text.split_whitespace().count() as u32,
                 days_ago,
@@ -92,7 +96,7 @@ fn collect(dir: &Path, out: &mut Vec<Note>) {
     }
 }
 
-// This finds the vault
+// Scans the vault and gathers everything the dashboard shows
 pub fn load(vault: &Path) -> Stats {
     let (total, notes) = scan(vault);
 
@@ -101,11 +105,21 @@ pub fn load(vault: &Path) -> Stats {
 
     let mut all = Vec::new();
     collect(vault, &mut all);
+
+    // Every note, sorted by name, for searching
+    let mut all_notes: Vec<(String, PathBuf)> = all.iter()
+        .map(|n| (n.name.clone(), n.path.clone()))
+        .collect();
+    all_notes.sort();
+
+    // Biggest notes first
     all.sort_by(|a, b| b.words.cmp(&a.words));
 
     let top = all.iter().take(10).map(|n| {
         Line::from(format!("{:>6}    {}", n.words, n.name)).fg(TEXT)
     }).collect();
+
+    let paths = all.iter().take(10).map(|n| n.path.clone()).collect();
 
     let mut per_day = [0u32; 371];
     for n in &all {
@@ -114,5 +128,5 @@ pub fn load(vault: &Path) -> Stats {
         }
     }
 
-    Stats { total, notes, dirs, top, per_day }
+    Stats { total, notes, dirs, top, paths, per_day, all: all_notes }
 }

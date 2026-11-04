@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::time::SystemTime;
 
 use ratatui::Frame;
@@ -10,7 +11,8 @@ use crate::scan::Stats;
 use crate::theme::*;
 
 // Draws the dashborad
-pub fn draw(frame: &mut Frame, stats: &Stats, p: f32, e: f32, ms: u32) {
+pub fn draw(frame: &mut Frame, stats: &Stats, p: f32, e: f32, ms: u32,
+            selected: usize, searching: bool, query: &str, results: &[(String, PathBuf)]) {
     let days = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs() / 86400;
     let today = ((days + 3) % 7) as i64;
 
@@ -55,6 +57,8 @@ pub fn draw(frame: &mut Frame, stats: &Stats, p: f32, e: f32, ms: u32) {
     frame.render_widget(Block::new().bg(BG), top);
     frame.render_widget(Paragraph::new(rows).bg(BG), logo_area);
 
+    frame.render_widget(Block::new().bg(BG), top);
+
     let [middle, heat_area] = Layout::vertical([
         Constraint::Min(0),
         Constraint::Length(9),
@@ -87,29 +91,50 @@ pub fn draw(frame: &mut Frame, stats: &Stats, p: f32, e: f32, ms: u32) {
         .label_style(Style::new().fg(TEXT));
     frame.render_widget(chart, chart_area);
 
-    // Biggest notes
-    let list_box = Block::bordered()
-        .border_type(BorderType::Rounded)
-        .title(" største notater ")
-        .fg(MUTED)
-        .bg(BG);
-    frame.render_widget(Paragraph::new(stats.top.iter().take((e * 10.0) as usize).cloned().collect::<Vec<_>>()).block(list_box), list_area);
+    // Note list: search results or biggest notes
+    let (title, lines): (String, Vec<Line>) = if searching {
+        let mut lines: Vec<Line> = results.iter()
+            .map(|(n, _)| Line::from(n.clone()).fg(TEXT))
+            .collect();
+        if results.is_empty() && !query.is_empty() {
+            lines.push(Line::from(format!("Enter: lag nytt notat \"{}\"", query)).fg(ACCENT));
+        }
+        (format!(" søk: {}_ ", query), lines)
+    } else {
+        (" største notater ".to_string(), stats.top.iter().take((e * 10.0) as usize).cloned().collect())
+    };
 
-    // Heatmap, GitHub style
-    let mut legend = vec![Span::raw(" Less ").fg(MUTED)];
-    for c in LEVELS {
-        legend.push(Span::raw("■ ").fg(c));
-    }
-    legend.push(Span::raw("More ").fg(MUTED));
+    // Highlight the selected line
+    let lines: Vec<Line> = lines.into_iter().enumerate()
+        .map(|(i, l)| if i == selected { l.fg(BG).bg(ACCENT) } else { l })
+        .collect();
 
-    let heat_box = Block::bordered()
-        .border_type(BorderType::Rounded)
-        .title(" aktivitet ")
-        .title_bottom(Line::from(legend).right_aligned())
-        .fg(MUTED)
-        .bg(BG);
+    // Scroll so the selected line is always visible
+                let height = list_area.height.saturating_sub(2) as usize;
+                let offset = selected.saturating_sub(height.saturating_sub(1));
 
-    let labels = ["Man ", "    ", "Ons ", "    ", "Fre ", "    ", "    "];
+                let list_box = Block::bordered()
+                    .border_type(BorderType::Rounded)
+                    .title(title)
+                    .fg(MUTED)
+                    .bg(BG);
+                frame.render_widget(Paragraph::new(lines).block(list_box).scroll((offset as u16, 0)), list_area);
+
+                // Heatmap, GitHub style
+                let mut legend = vec![Span::raw(" Less ").fg(MUTED)];
+                for c in LEVELS {
+                    legend.push(Span::raw("■ ").fg(c));
+        }
+                legend.push(Span::raw("More ").fg(MUTED));
+
+                let heat_box = Block::bordered()
+                    .border_type(BorderType::Rounded)
+                    .title(" aktivitet ")
+                    .title_bottom(Line::from(legend).right_aligned())
+                    .fg(MUTED)
+                    .bg(BG);
+
+                let labels = ["Man ", "    ", "Ons ", "    ", "Fre ", "    ", "    "];
 
     // One row per weekday, one column per week, newest week on the right
     let heat: Vec<Line> = (0..7).map(|row| {
