@@ -7,12 +7,14 @@ use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{BarChart, Block, BorderType, Paragraph};
 
+use crate::tree::Item;
 use crate::scan::Stats;
 use crate::theme::*;
 
 // Draws the dashborad
 pub fn draw(frame: &mut Frame, stats: &Stats, p: f32, e: f32, ms: u32,
-            selected: usize, searching: bool, query: &str, results: &[(String, PathBuf)]) {
+    selected: usize, searching: bool, query: &str, results: &[(String, PathBuf)],
+    tree: &[Item]) {
     let days = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs() / 86400;
     let today = ((days + 3) % 7) as i64;
 
@@ -91,8 +93,19 @@ pub fn draw(frame: &mut Frame, stats: &Stats, p: f32, e: f32, ms: u32,
         .label_style(Style::new().fg(TEXT));
     frame.render_widget(chart, chart_area);
 
-    // Note list: search results or biggest notes
-    let (title, lines): (String, Vec<Line>) = if searching {
+    // Note list: search results, file tree or biggest notes
+    let (title, lines): (String, Vec<Line>) = if !tree.is_empty() {
+        let lines = tree.iter().map(|item| {
+            let indent = "  ".repeat(item.depth);
+            if item.is_dir {
+                let arrow = if item.open { "▾" } else { "▸" };
+                Line::from(format!("{}{} {}", indent, arrow, item.name)).fg(ACCENT)
+            } else {
+                Line::from(format!("{}  {}", indent, item.name)).fg(TEXT)
+            }
+        }).collect();
+        (" filer ".to_string(), lines)
+    } else if searching {
         let mut lines: Vec<Line> = results.iter()
             .map(|(n, _)| Line::from(n.clone()).fg(TEXT))
             .collect();
@@ -110,31 +123,31 @@ pub fn draw(frame: &mut Frame, stats: &Stats, p: f32, e: f32, ms: u32,
         .collect();
 
     // Scroll so the selected line is always visible
-                let height = list_area.height.saturating_sub(2) as usize;
-                let offset = selected.saturating_sub(height.saturating_sub(1));
+    let height = list_area.height.saturating_sub(2) as usize;
+    let offset = selected.saturating_sub(height.saturating_sub(1));
 
-                let list_box = Block::bordered()
-                    .border_type(BorderType::Rounded)
-                    .title(title)
-                    .fg(MUTED)
-                    .bg(BG);
-                frame.render_widget(Paragraph::new(lines).block(list_box).scroll((offset as u16, 0)), list_area);
+    let list_box = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .title(title)
+        .fg(MUTED)
+        .bg(BG);
+    frame.render_widget(Paragraph::new(lines).block(list_box).scroll((offset as u16, 0)), list_area);
 
-                // Heatmap, GitHub style
-                let mut legend = vec![Span::raw(" Less ").fg(MUTED)];
-                for c in LEVELS {
-                    legend.push(Span::raw("■ ").fg(c));
-        }
-                legend.push(Span::raw("More ").fg(MUTED));
+    // Heatmap, GitHub style
+    let mut legend = vec![Span::raw(" Less ").fg(MUTED)];
+    for c in LEVELS {
+        legend.push(Span::raw("■ ").fg(c));
+    }
+    legend.push(Span::raw("More ").fg(MUTED));
 
-                let heat_box = Block::bordered()
-                    .border_type(BorderType::Rounded)
-                    .title(" aktivitet ")
-                    .title_bottom(Line::from(legend).right_aligned())
-                    .fg(MUTED)
-                    .bg(BG);
+    let heat_box = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .title(" aktivitet ")
+        .title_bottom(Line::from(legend).right_aligned())
+        .fg(MUTED)
+        .bg(BG);
 
-                let labels = ["Man ", "    ", "Ons ", "    ", "Fre ", "    ", "    "];
+    let labels = ["Man ", "    ", "Ons ", "    ", "Fre ", "    ", "    "];
 
     // One row per weekday, one column per week, newest week on the right
     let heat: Vec<Line> = (0..7).map(|row| {
