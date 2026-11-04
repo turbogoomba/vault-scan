@@ -1,10 +1,11 @@
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{self, Event, KeyCode};
 
+mod vault;
 mod scan;
 mod theme;
 mod tree;
@@ -13,7 +14,11 @@ mod ui;
 use scan::load;
 
 fn main() {
-    let vault = Path::new("/home/tallman/Obsidian/Main_2");
+    let Some(vault_path) = vault::find() else {
+        eprintln!("No Obsidian vault found. Run: vault-scan /path/to/vault");
+        return;
+    };
+    let vault = vault_path.as_path();
     let mut stats = load(vault);
     let mut last_scan = Instant::now();
 
@@ -132,11 +137,17 @@ fn main() {
                 }
             } else {
                 match key.code {
+                    KeyCode::Esc => {
+                        browsing = false;
+                        selected = 0;
+                    }
                     KeyCode::Char('q') => quit = true,
                     KeyCode::Char('/') => {
+                        browsing = false;
                         searching = true;
                         selected = 0;
                     }
+
                     KeyCode::Char('e') => {
                         browsing = true;
                         selected = 0;
@@ -168,7 +179,9 @@ fn main() {
             }
 
             // Read the folders again only when something changed
-            if browsing && rebuild {
+            if !browsing {
+                items.clear();
+            } else if rebuild {
                 items.clear();
                 tree::build(vault, &expanded, 0, &mut items);
             }
