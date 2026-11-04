@@ -30,7 +30,6 @@ fn main() {
     let mut browsing = false;
     let mut expanded: HashSet<PathBuf> = HashSet::new();
     let mut items: Vec<tree::Item> = Vec::new();
-    let mut picking = false;
     let mut naming: Option<PathBuf> = None;
     let mut picking = false;
 
@@ -55,21 +54,6 @@ fn main() {
             Vec::new()
         };
 
-        // What the list box asks for while making a new note
-        let prompt = if picking {
-            let mut text = String::from(" nytt notat i: ");
-            for (i, (name, _)) in stats.dirs.iter().enumerate() {
-                // "01 - ELI2300 Dynamisk" -> "ELI2300"
-                let short = name.split(" - ").nth(1).unwrap_or(name).split(' ').next().unwrap_or(name);
-                text.push_str(&format!(" {} {} ", i + 1, short));
-            }
-            text.push_str(" 0 rot ");
-            Some(text)
-        } else if naming.is_some() {
-            Some(format!(" navn: {}_ ", query))
-        } else {
-            None
-        };
         // What the list box asks for while making a new note
         let prompt = if picking {
             let mut text = String::from(" nytt notat i: ");
