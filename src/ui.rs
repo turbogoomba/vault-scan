@@ -1,0 +1,146 @@
+use std::time::SystemTime;
+
+use ratatui::Frame;
+use ratatui::layout::{Constraint, Direction, Flex, Layout};
+use ratatui::style::{Color, Style, Stylize};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{BarChart, Block, BorderType, Paragraph};
+
+use crate::scan::Stats;
+use crate::theme::*;
+
+// Draws the dashborad
+pub fn draw(frame: &mut Frame, stats: &Stats, p: f32, e: f32, ms: u32) {
+    let days = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs() / 86400;
+    let today = ((days + 3) % 7) as i64;
+
+    let [top, bottom] = Layout::vertical([
+        Constraint::Length(10),
+        Constraint::Min(0),
+    ]).areas(frame.area());
+
+    let [logo_area] = Layout::horizontal([Constraint::Length(110)])
+        .flex(Flex::Center)
+        .areas(top);
+
+    // Gradient logo with twinkling stars
+    let rows: Vec<Line> = LOGO.lines().enumerate().map(|(i, line)| {
+        let t = i as f32 / 9.0;
+        let (r, g, b) = (mix(0x51, 0xE3, t), mix(0x51, 0xDC, t), mix(0x3D, 0x95, t));
+
+        let cells: Vec<Span> = line.chars().enumerate().map(|(j, ch)| {
+            let (i, j) = (i as u32, j as u32);
+
+            // Each character gets its own rhythm
+            let offset = hash(i, j, 0) % 1000;
+            let cycle = (ms + offset) / 1000;
+            let phase = ((ms + offset) % 1000) as f32 / 1000.0;
+
+            // About 1 in 60 characters lights up each cycle
+            let star = p >= 1.0 && ch != ' ' && hash(i, j, cycle) % 60 == 0;
+            let glow = if star { (phase * std::f32::consts::PI).sin() } else { 0.0 };
+
+            let color = Color::Rgb(
+                mix(mix(0x1B, r, e), 0xFF, glow),
+                mix(mix(0x20, g, e), 0xFA, glow),
+                mix(mix(0x21, b, e), 0xE0, glow),
+            );
+            let shown = if glow > 0.7 { '✦' } else { ch };
+            Span::raw(shown.to_string()).fg(color)
+        }).collect();
+
+        Line::from(cells)
+    }).collect();
+
+    frame.render_widget(Block::new().bg(BG), top);
+    frame.render_widget(Paragraph::new(rows).bg(BG), logo_area);
+
+    let [middle, heat_area] = Layout::vertical([
+        Constraint::Min(0),
+        Constraint::Length(9),
+    ]).areas(bottom);
+
+    let [chart_area, list_area] = Layout::horizontal([
+        Constraint::Percentage(60),
+        Constraint::Percentage(40),
+    ]).areas(middle);
+
+    // Bar chart
+    let bars: Vec<(&str, u64)> = stats.dirs.iter()
+        .map(|(n, c)| (n.as_str(), (*c as f32 * e) as u64))
+        .collect();
+    let max = stats.dirs.iter().map(|(_, c)| *c).max().unwrap_or(1); // NY
+
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .title(format!(" vault-scan   {} words   {} notater ", (stats.total as f32 * e) as u32, (stats.notes as f32 * e) as u32))
+        .fg(MUTED)
+        .bg(BG);
+    let chart = BarChart::default()
+        .block(block)
+        .data(&bars)
+        .max(max) // NY
+        .direction(Direction::Horizontal)
+        .bar_gap(1)
+        .bar_style(Style::new().fg(ACCENT))
+        .value_style(Style::new().fg(BG).bg(ACCENT))
+        .label_style(Style::new().fg(TEXT));
+    frame.render_widget(chart, chart_area);
+
+    // Biggest notes
+    let list_box = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .title(" største notater ")
+        .fg(MUTED)
+        .bg(BG);
+    frame.render_widget(Paragraph::new(stats.top.iter().take((e * 10.0) as usize).cloned().collect::<Vec<_>>()).block(list_box), list_area);
+
+    // Heatmap, GitHub style
+    let mut legend = vec![Span::raw(" Less ").fg(MUTED)];
+    for c in LEVELS {
+        legend.push(Span::raw("■ ").fg(c));
+    }
+    legend.push(Span::raw("More ").fg(MUTED));
+
+    let heat_box = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .title(" aktivitet ")
+        .title_bottom(Line::from(legend).right_aligned())
+        .fg(MUTED)
+        .bg(BG);
+
+    let labels = ["Man ", "    ", "Ons ", "    ", "Fre ", "    ", "    "];
+
+    // One row per weekday, one column per week, newest week on the right
+    let heat: Vec<Line> = (0..7).map(|row| {
+        let mut cells = vec![Span::raw(labels[row]).fg(MUTED)];
+        for col in 0..WEEKS {
+            let ago = (WEEKS - 1 - col) as i64 * 7 + today - row as i64;
+            if ago < 0 {
+                cells.push(Span::raw("   "));
+                continue;
+            }
+            let count = stats.per_day[ago as usize];
+            let level = match count {
+                0 => 0,
+                1 => 1,
+                2 => 2,
+                3..=4 => 3,
+                _ => 4,
+            };
+            let level = if col as f32 > e * WEEKS as f32 { 0 } else { level };
+            cells.push(Span::raw("▆▆ ").fg(LEVELS[level]));
+        }
+        Line::from(cells)
+    }).collect();
+
+    // Center the whole grid as one block, so the rows stay aligned
+    let inner = heat_box.inner(heat_area);
+    frame.render_widget(heat_box, heat_area);
+
+    let grid_width = 4 + WEEKS as u16 * 3;
+    let [grid_area] = Layout::horizontal([Constraint::Length(grid_width)])
+        .flex(Flex::Center)
+        .areas(inner);
+    frame.render_widget(Paragraph::new(heat), grid_area);
+}
