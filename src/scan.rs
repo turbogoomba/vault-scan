@@ -14,7 +14,6 @@ const INCLUDE: [&str; 3] = ["01", "02", "03"]; // What notes to include in stats
 struct Note {
     path: PathBuf,
     name: String,
-    words: u32,
     days_ago: u64,
     links: Vec<String>,
     tags: Vec<String>,
@@ -96,7 +95,6 @@ fn collect(dir: &Path, out: &mut Vec<Note>) {
             out.push(Note {
                 path: path.clone(),
                 name: name.trim_end_matches(".md").to_string(),
-                words: text.split_whitespace().count() as u32,
                 days_ago,
                 links: links_in(&text),
                 tags: tags_in(&text),
